@@ -2,9 +2,13 @@
 
 OmniRoute's prompt-compression engine stack, extracted as a standalone package.
 
-Give it an OpenAI-style chat-completions request body, get a smaller one back, then send that
-to whatever model you want — Ollama, llama.cpp, vLLM, LM Studio, or a hosted API. Nothing
-about the pipeline is tied to OmniRoute's gateway, dashboard, or database anymore.
+Give it a request body, get a smaller one back, then send that to whatever model you want.
+Use it as a library, or run the bundled proxy and point **Claude Code**, **Codex**, or any
+OpenAI-compatible client at it. Nothing is tied to OmniRoute's gateway, dashboard, or database
+anymore.
+
+All three wire formats are supported and tested: Anthropic Messages (Claude Code, **77–84%**
+saved), OpenAI Responses (Codex, **89.7%**), and OpenAI chat completions (**67.9%**).
 
 Extracted from [OmniRoute](https://github.com/diegosouzapw/OmniRoute) v3.8.50 (MIT — see
 `LICENSE.omniroute`). 6 runtime npm packages instead of 2433.
@@ -65,7 +69,8 @@ the body unchanged rather than erroring. Everything else runs.
 git clone <this repo>
 cd token-saver
 npm install
-npm test          # 4 unit tests
+npm test          # 8 unit tests
+npm run proxy     # start the Claude Code / Codex proxy
 npm run smoke     # end-to-end, prints before/after token counts
 ```
 
@@ -141,6 +146,84 @@ await compress(body, { mode: "rtk" });   // or "lite" | "aggressive" | "ultra" |
 import { processRtkText } from "./src/engine/engines/rtk/index.ts";
 import { cavemanCompress } from "./src/engine/caveman.ts";
 ```
+
+---
+
+## Use it with Claude Code and Codex
+
+Compression cannot be a Claude Code plugin: hooks fire around *tool* events, and none of them
+can rewrite the request that goes to the model. `PostToolUse` cannot replace a tool result, and
+`PreToolUse.updatedInput` only edits a tool's **input**. So token-saver ships a **local proxy**
+instead — both CLIs already support pointing at a custom base URL.
+
+```bash
+npm run proxy        # http://127.0.0.1:8787
+```
+
+It compresses the request, forwards it upstream with **your own credentials untouched** (no key
+is read or stored by the proxy), and streams the response straight back. Only the request is
+rewritten; responses, streaming, and tool calls are a byte-for-byte pipe.
+
+### Claude Code
+
+```bash
+ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude
+```
+
+Verified through the real proxy binary with a Claude-Code-shaped request:
+**745 → 122 tokens (83.6%)**, `tool_use_id`, `cache_control` and the system block intact.
+
+### Codex
+
+`~/.codex/config.toml`:
+
+```toml
+model = "gpt-5-codex"
+model_provider = "tokensaver"
+
+[model_providers.tokensaver]
+name = "token-saver"
+base_url = "http://127.0.0.1:8787/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+```
+
+Verified on a Responses-API body: **89.7%** saved, `call_id` linkage intact.
+
+### Any OpenAI-compatible client
+
+```ts
+new OpenAI({ baseURL: "http://127.0.0.1:8787/v1", apiKey: process.env.OPENAI_API_KEY });
+```
+
+### Proxy settings
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PORT` | `8787` | Listen port (binds `127.0.0.1` only) |
+| `TOKEN_SAVER_ENGINES` | `rtk` | Comma-separated engine ids, run in order |
+| `TOKEN_SAVER_MIN_CHARS` | `2000` | Bodies smaller than this pass through untouched |
+| `TOKEN_SAVER_ANTHROPIC_URL` | `https://api.anthropic.com` | Upstream for `/v1/messages` |
+| `TOKEN_SAVER_OPENAI_URL` | `https://api.openai.com` | Upstream for `/v1/responses`, `/v1/chat/completions` |
+
+### Why the default is RTK only
+
+Claude Code and Codex both lean on upstream **prompt caching**, where re-reading a cached prefix
+costs a fraction of a fresh read. That makes *stability* worth more than raw ratio:
+
+- **RTK is deterministic per tool result.** Re-compressing an older turn yields the same bytes,
+  so the cached prefix still matches — you keep the cache *and* the savings. It is also the
+  engine doing 80–90% of the work on agent traffic, which is mostly command and file output.
+- **Cross-turn engines rewrite history.** `session-dedup`, `relevance` and `ccr` change earlier
+  turns as the conversation grows, so the prefix differs on every request and the cache is
+  forfeited. That can cost more than the compression saves.
+- **Caveman is off** because mangling your own prose for a few percent is a bad trade when you
+  are paying for the model to understand you precisely.
+
+Turn more on when you know the tradeoff — `TOKEN_SAVER_ENGINES=rtk,caveman`.
+
+An unparseable or unexpected body is always forwarded unchanged rather than erroring, so a bad
+request degrades to plain proxying instead of breaking your session.
 
 ---
 
@@ -229,7 +312,9 @@ src/engine/         the pipeline (verbatim OmniRoute, 2 loader paths patched)
   engines/          one directory per engine
   rules/            caveman rule packs, 9 languages
   engines/rtk/filters/  55 builtin command filters (npm, git, docker, cargo, …)
+src/proxy/          the Claude Code / Codex proxy (policy + server)
 src/shim/           the OmniRoute seams, re-implemented or copied
+bin/proxy.ts        proxy launcher (npm run proxy)
 scripts/            smoke test + per-engine probes
 ```
 

@@ -8,7 +8,8 @@
   "scripts": {
     "test": "node --experimental-strip-types --test \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
-    "smoke": "node --experimental-strip-types scripts/smoke.ts"
+    "smoke": "node --experimental-strip-types scripts/smoke.ts",
+    "proxy": "node --experimental-strip-types bin/proxy.ts"
   },
   "dependencies": {
     "@toon-format/toon": "^4.1.1",
@@ -24,5 +25,8 @@
   },
   "engines": {
     "node": ">=22.22.2"
+  },
+  "bin": {
+    "token-saver-proxy": "bin/proxy.ts"
   }
 }
