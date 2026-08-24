@@ -173,6 +173,35 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude
 Verified through the real proxy binary with a Claude-Code-shaped request:
 **745 → 122 tokens (83.6%)**, `tool_use_id`, `cache_control` and the system block intact.
 
+### Claude Code behind a corporate gateway
+
+If `ANTHROPIC_BASE_URL` already points at a company gateway (Databricks AI Gateway, LiteLLM,
+Bedrock proxy…), chain the proxy in front of it — the base-URL slot moves to token-saver and the
+gateway becomes token-saver's upstream:
+
+```bash
+TOKEN_SAVER_ANTHROPIC_URL=https://<host>/ai-gateway/anthropic npm run proxy
+```
+
+`settings.json`:
+
+```jsonc
+"env": {
+  "ANTHROPIC_BASE_URL": "http://127.0.0.1:8787",   // was the gateway URL
+  "ANTHROPIC_AUTH_TOKEN": "…",                     // unchanged — forwarded as-is
+  "ANTHROPIC_CUSTOM_HEADERS": "x-databricks-use-coding-agent-mode: true"  // unchanged
+}
+```
+
+Gateway base paths are preserved: a request to `/v1/messages` with an upstream of
+`https://host/ai-gateway/anthropic` is forwarded to
+`https://host/ai-gateway/anthropic/v1/messages`, not to the host root. Auth tokens and custom
+headers pass through untouched. Verified end to end against a simulated Databricks gateway:
+**747 → 124 tokens (83.4%)**, bearer token and `x-databricks-use-coding-agent-mode` intact.
+
+**Caveat:** Claude Code now depends on the proxy being up. If it is not running, requests fail
+with a connection error until you start it or restore the original base URL.
+
 ### Codex
 
 `~/.codex/config.toml`:

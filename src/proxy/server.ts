@@ -59,6 +59,22 @@ function baseUrlFor(wire: AgentWire | null, options: ProxyOptions): string {
   return options.openaiBaseUrl ?? process.env.TOKEN_SAVER_OPENAI_URL ?? "https://api.openai.com";
 }
 
+/**
+ * Join an upstream base URL with the incoming request path, KEEPING any path
+ * prefix the base URL carries. Corporate gateways mount the API under a prefix
+ * (Databricks: https://host/ai-gateway/anthropic), and `new URL(path, base)`
+ * would discard it and send /v1/messages to the host root.
+ */
+export function joinUpstream(baseUrl: string, requestPath: string): URL {
+  const base = new URL(baseUrl);
+  const prefix = base.pathname.replace(/\/+$/, "");
+  const [pathname, query] = requestPath.split("?");
+  const target = new URL(base.origin);
+  target.pathname = `${prefix}${pathname.startsWith("/") ? "" : "/"}${pathname}`;
+  if (query) target.search = query;
+  return target;
+}
+
 export function createProxyServer(options: ProxyOptions = {}): http.Server {
   const engines = options.engines ?? ["rtk"];
   const minChars = options.minChars ?? 2_000;
@@ -96,7 +112,7 @@ export function createProxyServer(options: ProxyOptions = {}): http.Server {
         }
       }
 
-      const target = new URL(path, baseUrlFor(wire, options));
+      const target = joinUpstream(baseUrlFor(wire, options), path);
       const headers = forwardHeaders(req);
       if (outgoing) headers["content-length"] = String(Buffer.byteLength(outgoing));
 

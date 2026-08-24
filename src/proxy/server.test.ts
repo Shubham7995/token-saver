@@ -16,6 +16,44 @@ function listen(server: http.Server): Promise<number> {
   });
 }
 
+test("proxy preserves a gateway's base path (e.g. Databricks /ai-gateway/anthropic)", async () => {
+  let hitPath: string | undefined;
+  let hitHeader: string | undefined;
+
+  const gateway = http.createServer((req, res) => {
+    hitPath = req.url;
+    hitHeader = req.headers["x-databricks-use-coding-agent-mode"] as string | undefined;
+    req.resume();
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+  });
+  const gatewayPort = await listen(gateway);
+
+  const proxy = createProxyServer({
+    anthropicBaseUrl: `http://127.0.0.1:${gatewayPort}/ai-gateway/anthropic`,
+    onRequest: null,
+  });
+  const proxyPort = await listen(proxy);
+
+  const response = await fetch(`http://127.0.0.1:${proxyPort}/v1/messages`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-databricks-use-coding-agent-mode": "true",
+    },
+    body: JSON.stringify({ model: "databricks-claude-opus-5", messages: [] }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(hitPath, "/ai-gateway/anthropic/v1/messages");
+  assert.equal(hitHeader, "true", "custom gateway headers must be forwarded");
+
+  await new Promise((r) => proxy.close(r));
+  await new Promise((r) => gateway.close(r));
+});
+
 test("proxy streams an SSE response back chunk by chunk, unmodified", async () => {
   const upstream = http.createServer((req, res) => {
     req.resume();
