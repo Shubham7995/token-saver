@@ -11,6 +11,20 @@ import http from "node:http";
 import { compress } from "../index.ts";
 import { agentConfig, wireForPath, type AgentWire } from "./policy.ts";
 
+/** What the proxy did with one request — the unit the launcher aggregates and logs. */
+export interface RequestReport {
+  method: string;
+  path: string;
+  status: number;
+  wire: AgentWire | null;
+  /** "active" rewrote the body, "shadow" only measured it, "passthrough" did neither. */
+  mode: "active" | "shadow" | "passthrough";
+  originalTokens: number;
+  compressedTokens: number;
+  savingsPercent: number;
+  note?: string;
+}
+
 export interface ProxyOptions {
   /** Upstream for /v1/messages. Default: https://api.anthropic.com */
   anthropicBaseUrl?: string;
@@ -20,8 +34,14 @@ export interface ProxyOptions {
   engines?: string[];
   /** Bodies smaller than this many characters are forwarded untouched. */
   minChars?: number;
-  /** Per-request log line. Set to null to silence. */
-  onRequest?: ((line: string) => void) | null;
+  /**
+   * Measure-only mode: compress the body to learn what it WOULD save, then
+   * forward the byte-identical original. Zero risk to the session, real numbers
+   * from real traffic — run this before trusting compression with your work.
+   */
+  shadow?: boolean;
+  /** Per-request report. Set to null to silence. */
+  onRequest?: ((report: RequestReport) => void) | null;
 }
 
 /** Headers that describe the body we are about to replace, or the hop itself. */
@@ -75,10 +95,20 @@ export function joinUpstream(baseUrl: string, requestPath: string): URL {
   return target;
 }
 
+function defaultReporter(r: RequestReport): void {
+  const detail =
+    r.mode === "passthrough"
+      ? (r.note ?? "passthrough")
+      : `${r.originalTokens} -> ${r.compressedTokens} tok (${r.savingsPercent}%)${r.mode === "shadow" ? " [shadow — not applied]" : ""}`;
+  console.log(`${r.method} ${r.path} -> ${r.status}  ${detail}`);
+}
+
 export function createProxyServer(options: ProxyOptions = {}): http.Server {
   const engines = options.engines ?? ["rtk"];
   const minChars = options.minChars ?? 2_000;
-  const log = options.onRequest === null ? () => {} : (options.onRequest ?? console.log);
+  const shadow = options.shadow ?? process.env.TOKEN_SAVER_SHADOW === "1";
+  const report: (r: RequestReport) => void =
+    options.onRequest === null ? () => {} : (options.onRequest ?? defaultReporter);
 
   return http.createServer(async (req, res) => {
     try {
@@ -87,7 +117,11 @@ export function createProxyServer(options: ProxyOptions = {}): http.Server {
       const raw = req.method === "GET" || req.method === "HEAD" ? "" : await readBody(req);
 
       let outgoing = raw;
-      let note = "passthrough";
+      let note: string | undefined;
+      let mode: RequestReport["mode"] = "passthrough";
+      let originalTokens = 0;
+      let compressedTokens = 0;
+      let savingsPercent = 0;
 
       if (wire && raw.length >= minChars) {
         try {
@@ -99,9 +133,13 @@ export function createProxyServer(options: ProxyOptions = {}): http.Server {
               : {}),
           } as never);
           if (result.compressed) {
-            outgoing = JSON.stringify(result.body);
-            const saved = result.stats?.savingsPercent ?? 0;
-            note = `${result.stats?.originalTokens ?? "?"} -> ${result.stats?.compressedTokens ?? "?"} tok (${saved}%)`;
+            originalTokens = result.stats?.originalTokens ?? 0;
+            compressedTokens = result.stats?.compressedTokens ?? 0;
+            savingsPercent = result.stats?.savingsPercent ?? 0;
+            mode = shadow ? "shadow" : "active";
+            // In shadow mode `outgoing` is deliberately left as the original raw
+            // string: we learned what compression would save without risking it.
+            if (!shadow) outgoing = JSON.stringify(result.body);
           } else {
             note = "nothing to compress";
           }
@@ -123,7 +161,17 @@ export function createProxyServer(options: ProxyOptions = {}): http.Server {
         redirect: "manual",
       });
 
-      log(`${req.method} ${path} -> ${upstream.status}  ${note}`);
+      report({
+        method: req.method ?? "GET",
+        path,
+        status: upstream.status,
+        wire,
+        mode,
+        originalTokens,
+        compressedTokens,
+        savingsPercent,
+        ...(note ? { note } : {}),
+      });
 
       const responseHeaders: Record<string, string> = {};
       upstream.headers.forEach((value, key) => {

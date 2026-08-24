@@ -173,6 +173,41 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude
 Verified through the real proxy binary with a Claude-Code-shaped request:
 **745 → 122 tokens (83.6%)**, `tool_use_id`, `cache_control` and the system block intact.
 
+### Start in shadow mode
+
+Before trusting compression with real work, run it in **shadow mode**: the proxy compresses each
+body to learn what it *would* save, then forwards the byte-identical original. Nothing your agent
+sends is altered, so there is no quality or cache risk — you just get real numbers from your own
+traffic instead of a README's fixtures.
+
+```bash
+TOKEN_SAVER_SHADOW=1 TOKEN_SAVER_LOG=./shadow.jsonl npm run proxy
+```
+
+Work normally for a day, then Ctrl-C for the session report — shape shown here with
+placeholder figures, since the only numbers that matter are the ones from your own traffic:
+
+```
+──────── token-saver session report ────────
+mode                : shadow (nothing was changed)
+requests seen       : N
+compressible        : N  (% of requests)
+tokens in           : N
+tokens out          : N
+saved               : N  (%)
+best / worst request: % / %
+────────────────────────────────────────────
+```
+
+`shadow.jsonl` holds one JSON record per request for your own analysis.
+
+**Read the number honestly.** It counts request tokens only and ignores prompt-cache economics —
+a cached prefix bills at a fraction of an uncached one, so this is an *upper bound* on what
+compression can win you, not a bill delta. If the figure is small, your traffic is dominated by
+file reads and prose rather than command output, and compression is not your bottleneck.
+
+Drop `TOKEN_SAVER_SHADOW=1` to switch the same setup to active.
+
 ### Claude Code behind a corporate gateway
 
 If `ANTHROPIC_BASE_URL` already points at a company gateway (Databricks AI Gateway, LiteLLM,
@@ -230,6 +265,8 @@ new OpenAI({ baseURL: "http://127.0.0.1:8787/v1", apiKey: process.env.OPENAI_API
 | Variable | Default | Meaning |
 |---|---|---|
 | `PORT` | `8787` | Listen port (binds `127.0.0.1` only) |
+| `TOKEN_SAVER_SHADOW` | unset | `1` = measure only, forward the original body unchanged |
+| `TOKEN_SAVER_LOG` | unset | Append one JSON record per request to this file |
 | `TOKEN_SAVER_ENGINES` | `rtk` | Comma-separated engine ids, run in order |
 | `TOKEN_SAVER_MIN_CHARS` | `2000` | Bodies smaller than this pass through untouched |
 | `TOKEN_SAVER_ANTHROPIC_URL` | `https://api.anthropic.com` | Upstream for `/v1/messages` |

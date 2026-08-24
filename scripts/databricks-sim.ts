@@ -35,6 +35,8 @@ const proxy = spawn(process.execPath, ["--experimental-strip-types", "bin/proxy.
   env: {
     ...process.env,
     PORT: "9922",
+    TOKEN_SAVER_SHADOW: process.env.SIM_SHADOW ?? "",
+    TOKEN_SAVER_LOG: process.env.SIM_LOG ?? "",
     TOKEN_SAVER_ANTHROPIC_URL: "http://127.0.0.1:9921/ai-gateway/anthropic",
   },
   stdio: ["ignore", "pipe", "pipe"],
@@ -70,6 +72,7 @@ console.log("bearer forwarded   :", seen.auth === "Bearer dapi-fake-token");
 console.log("databricks header  :", seen.header);
 console.log("chars sent/received:", body.length, "->", seen.chars);
 console.log("wire reduction     :", (((body.length - seen.chars) / body.length) * 100).toFixed(1) + "%");
+console.log("body byte-identical:", seen.chars === body.length);
 
 proxy.kill("SIGINT");
 await new Promise((r) => setTimeout(r, 300));

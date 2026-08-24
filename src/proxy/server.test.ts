@@ -16,6 +16,61 @@ function listen(server: http.Server): Promise<number> {
   });
 }
 
+test("shadow mode measures savings but forwards the original body untouched", async () => {
+  let received = "";
+  const upstream = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (chunk) => (raw += chunk));
+    req.on("end", () => {
+      received = raw;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+  });
+  const upstreamPort = await listen(upstream);
+
+  const reports: Array<Record<string, unknown>> = [];
+  const proxy = createProxyServer({
+    anthropicBaseUrl: `http://127.0.0.1:${upstreamPort}`,
+    shadow: true,
+    minChars: 0,
+    onRequest: (info) => reports.push(info as unknown as Record<string, unknown>),
+  });
+  const proxyPort = await listen(proxy);
+
+  const body = JSON.stringify({
+    model: "claude-opus-4-6",
+    messages: [
+      { role: "user", content: [{ type: "text", text: "check" }] },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "npm i" } }],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "toolu_1", content: noisyOutput }],
+      },
+    ],
+  });
+
+  await fetch(`http://127.0.0.1:${proxyPort}/v1/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body,
+  });
+
+  assert.equal(received, body, "shadow mode must forward the byte-identical original");
+  assert.equal(reports.length, 1);
+  assert.equal(reports[0].mode, "shadow");
+  assert.ok(
+    (reports[0].savingsPercent as number) > 30,
+    `expected a measured saving, got ${reports[0].savingsPercent}`
+  );
+
+  await new Promise((r) => proxy.close(r));
+  await new Promise((r) => upstream.close(r));
+});
+
 test("proxy preserves a gateway's base path (e.g. Databricks /ai-gateway/anthropic)", async () => {
   let hitPath: string | undefined;
   let hitHeader: string | undefined;
